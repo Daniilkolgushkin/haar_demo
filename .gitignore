@@ -1,0 +1,55 @@
+# Installed JavaScript dependencies and package-manager caches.
+node_modules/
+/.npm/
+/.pnpm-store/
+
+# Local Emscripten SDK, downloaded tools, native test binaries and screenshots.
+/.tools/
+/.emscripten
+/.emscripten_cache/
+/.emscripten_ports/
+
+# Reproducible build output (npm run build regenerates JS glue and WASM).
+/dist/
+/src/generated/
+/build/
+/cmake-build-*/
+/.vite/
+*.tsbuildinfo
+
+# Test reports, coverage and Python bytecode.
+/test-results/
+/playwright-report/
+/blob-report/
+/coverage/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local environment files; sanitized templates can be committed.
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.template
+!.env.*.template
+
+# Machine-specific agent/cloud configuration from the local workspace.
+/.codex/
+/.agents/
+/.aws/
+
+# Editor state, OS metadata and logs.
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+*.log
+
+# Keep package-lock.json, cpp/, src/wasm/, tests/, scripts/, .github/ and
+# project documentation tracked. Do not globally exclude audio/image files:
+# intentional test fixtures and documentation assets belong in the repository.

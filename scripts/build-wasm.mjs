@@ -1,0 +1,10 @@
+import { mkdirSync, existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+const {maxPaddedSamples}=JSON.parse(readFileSync('config.json','utf8'));
+const local='.tools/emsdk/upstream/emscripten/em++';
+const compiler=process.env.EMXX || (existsSync(local)?local:'em++');
+mkdirSync('src/generated/haar',{recursive:true});
+const exports=['malloc','free','haar_max','haar_error','haar_clear','haar_load','haar_reconstruct','haar_channel','haar_bins'].map(n=>'_'+n);
+const result=spawnSync(compiler,['cpp/haar.cpp','cpp/wasm.cpp','-std=c++20',`-DHAAR_MAX_PADDED=${maxPaddedSamples}`,'-O3','-fexceptions','--no-entry','-sMODULARIZE=1','-sEXPORT_ES6=1','-sENVIRONMENT=worker','-sALLOW_MEMORY_GROWTH=1','-sMAXIMUM_MEMORY=1073741824','-sSTACK_SIZE=1048576','-sDISABLE_EXCEPTION_CATCHING=0',`-sEXPORTED_FUNCTIONS=${JSON.stringify(exports)}`,'-sEXPORTED_RUNTIME_METHODS=["HEAPF32","HEAPU8","HEAPU32","UTF8ToString"]','-o','src/generated/haar/haar.js'],{stdio:'inherit'});
+if(result.error) console.error('Emscripten unavailable. Install version from emsdk-version.txt, source emsdk_env.sh or set EMXX.',result.error.message);
+process.exit(result.status??1);
