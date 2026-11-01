@@ -1,104 +1,165 @@
 # Haar Audio Lab
 
-Локальная лаборатория полного ортонормированного разложения Хаара: загрузка аудио → C++/WebAssembly DWT в Worker → маска → настоящий IDWT → прослушивание. Статическое приложение без backend, CDN и передачи аудио по сети.
+Explore the Haar wavelet transform in your browser. Load an audio file, view its full decomposition, turn off individual coefficients or whole scales, and compare the reconstructed signal with the original.
 
-Стек по обновлённому заданию: **C++20 + Emscripten**, TypeScript, Vite, Canvas, Web Audio. Rust не нужен. Установленные в ходе работы локальные Rust SDK, установщик и исходники удалены; системные пакеты не изменялись. Спецификация: [DESIGN.md](DESIGN.md), задание: [CODEX_PROMPT.md](CODEX_PROMPT.md), план: [PLAN.md](PLAN.md).
+The calculations run in a Web Worker using **C++20 compiled to WebAssembly**. The interface uses TypeScript, Canvas, and the Web Audio API. The app runs on static hosting. Audio is processed locally and is not sent to a server.
 
-## Запуск
+## Features
 
-Требуются Node **22 LTS** (22.12+), npm, Python 3, C++20 compiler (`c++`, GCC 11+ / Clang 14+) и Emscripten **4.0.10**. Зависимости JS зафиксированы в `package-lock.json`; версия Emscripten — в `emsdk-version.txt`.
+- Full orthonormal Haar DWT and signal reconstruction using the inverse transform (IDWT).
+- Mono and stereo support. Each channel is processed separately with the same mask.
+- A time–scale map: purple shows the original coefficients; orange marks disabled contributions.
+- Controls to disable coarse scales in order, whole rows, or individual coefficients.
+- Horizontal zoom up to 32×, panning, and keyboard controls.
+- Playback of the original or the latest reconstructed signal, one at a time.
+- Clipping protection with a shared gain adjustment for both channels.
+- Builds for the site root or a subpath, including GitHub Pages.
+
+## Using the app
+
+The app interface is currently in Russian.
+
+1. Select a local audio file. Support for WAV, MP3, Ogg, FLAC, and other formats depends on your browser's codecs.
+2. Wait for the transform to finish. The app shows the duration, channel count, actual sample rate, and number of transform levels above the map.
+3. Move the slider to disable contributions in order: `A_J`, then `D_J`, …, `D_1`. The ≈80 Hz and ≈200 Hz buttons select the nearest available scale.
+4. Click a row label to toggle the whole level, or a cell to toggle one coefficient. A cell must be at least 8 CSS pixels wide. Use zoom and the position slider to reach smaller cells. You can also select a level and enter a coefficient index `k` with the controls below the map.
+5. Play the original or the reconstructed audio. The reset button restores all coefficients.
+
+Moving the slider clears individual changes. Manual changes switch the mask to custom selection mode. Changing the mask stops playback. The reconstructed audio becomes available when the latest calculation finishes.
+
+**The map shows scales, not exact frequency bands.** Haar filters have broad, overlapping frequency responses. The approximate Hz labels do not define a sharp cutoff. The first scales of a long recording may be below the audible range.
+
+## Local setup
+
+The commands below use Bash on Linux or macOS. On Windows, use WSL.
+
+Requirements:
+
+- Node.js 22, version 22.12 or later within that release line, and npm.
+- Python 3 and Git.
+- The Emscripten version listed in [`emsdk-version.txt`](emsdk-version.txt), currently `4.0.10`.
+- A C++20 compiler for native tests, available as `c++` or set through `CXX`.
+
+From the root of your cloned repository, install the local SDK and dependencies:
 
 ```bash
-# Однократная локальная установка SDK; не меняет shell profile.
-git clone --depth 1 --branch 4.0.10 https://github.com/emscripten-core/emsdk.git .tools/emsdk
-.tools/emsdk/emsdk install 4.0.10
-.tools/emsdk/emsdk activate 4.0.10
+mkdir -p .tools
+EMSDK_VERSION=$(cat emsdk-version.txt)
+git clone --depth 1 --branch "$EMSDK_VERSION" \
+  https://github.com/emscripten-core/emsdk.git .tools/emsdk
+.tools/emsdk/emsdk install "$EMSDK_VERSION"
+.tools/emsdk/emsdk activate "$EMSDK_VERSION"
 source .tools/emsdk/emsdk_env.sh
 
 npm ci
 npm run dev
 ```
 
-Сборщик автоматически находит `.tools/emsdk/upstream/emscripten/em++`; также поддерживаются `em++` в PATH и явный `EMXX`. В этом рабочем каталоге SDK уже установлен. `npm run dev` сначала собирает WASM; после изменения C++ перезапустите dev или выполните `npm run wasm:build`.
+Open the address printed by Vite. You only need to install the SDK once. If Emscripten is already installed, use `em++` from `PATH` or set `EMXX` to the compiler path. The build script also finds the SDK in `.tools/emsdk` automatically.
+
+`npm run dev` builds WASM before starting the dev server. After changing C++ code, run `npm run wasm:build` or restart the dev server.
+
+## Build
 
 ```bash
-npm run test:core     # native C++ + независимый Python-эталон
-npm test             # маски, hit testing, версии запросов
-npm run build        # WASM + TypeScript typecheck + Vite -> dist/
-npm run typecheck    # отдельно, после первой wasm:build
-npm run preview      # production preview
-
-# Браузерные сценарии production-сборки
-npx playwright install chromium
-npm run test:e2e
-# Либо уже установленный Chromium:
-CHROMIUM_PATH=/usr/bin/chromium npm run test:e2e
-
-# Проверка project Pages URL
-BASE_PATH=/repo/ npm run build
-BASE_PATH=/repo/ CHROMIUM_PATH=/usr/bin/chromium npm run test:e2e
+npm run build
+npm run preview
 ```
 
-`npm run build` не скачивает SDK и не использует Rust. Генерируемый WASM и glue игнорируются Git и воспроизводятся при сборке. В production достаточно содержимого `dist/`; открывать `index.html` через `file://` нельзя, нужен обычный статический HTTP hosting.
+The `build` command compiles C++ to WASM, checks TypeScript types, and builds the app into `dist/`. Install the SDK before running the build. Generated JS and WASM files are not stored in Git.
 
-## Управление и математика
+To host the app under a subpath:
 
-- Моно/стерео, без downmix. Одна маска применяется к обоим независимым каналам.
-- `M=next_power_of_two(N)`, **все** `J=log2(M)` уровней; `(x0±x1)/sqrt(2)`, packed `[a_J,d_J,…,d_1]`.
-- Правое symmetric reflection повторяет граничный отсчёт: `[1,2,3] → [1,2,3,3]`; `[1,2,3,4,5] → [1,2,3,4,5,5,4,3]`. После IDWT возвращаются ровно N отсчётов.
-- Слайдер задаёт выключенный префикс Aⱼ, Dⱼ, …, D₁ и сбрасывает исключения. Есть ориентиры ≈80/200 Гц. Ручной выбор помечается «Выборочно».
-- Метка строки переключает уровень; ячейка шириной от 8 CSS px — один коэффициент. Zoom 1–32× и ползунок позиции. Доступен ввод строки/k с клавиатуры; коэффициент должен быть виден и достаточно широк.
-- Оранжевый слой обозначает выключение поверх неизменной фиолетовой карты. Мелкие области сглаживаются Canvas; чёрная сетка остаётся поверх.
-- Цвет — RMS нормированных вкладов по каналам и пересекающимся коэффициентам каждого экранного bin, с логарифмической шкалой и 99-м перцентилем detail-строк. Это **не PSD и не точная карта частот**. Реакции Хаара широкие и перекрываются; ≈Гц — ориентир, а не резкий cutoff.
-- Исходное и восстановленное аудио играют по очереди. На каждом запуске создаётся новый AudioBufferSourceNode. Изменение маски останавливает звук и блокирует реконструкцию до актуального ответа.
-- Если peak восстановленного PCM >1, общий gain `0.999/peak` применяется ко всем каналам и показывается в dB; в остальных случаях усиления/нормализации нет.
+```bash
+BASE_PATH=/haar-audio-lab/ npm run build
+BASE_PATH=/haar-audio-lab/ npm run preview
+```
 
-## Архитектура
+The path must start and end with `/`. The default is `/`. Upload **all contents of `dist/`**, including the WASM and Worker assets. Serve the app over HTTP(S); do not open it through `file://`.
 
-| Файл | Назначение |
-| --- | --- |
-| `cpp/haar.hpp`, `cpp/haar.cpp` | Независимая математика, padding, session, compact mask, RMS bins, peak guard |
-| `cpp/wasm.cpp` | C ABI, владение сессией и выходными буферами, перехват C++ ошибок |
-| `src/wasm/session.ts` | Emscripten glue: malloc/free в try/finally, typed arrays, обновляемые heap views |
-| `src/worker/dsp.worker.ts` | Инициализация WASM, полное DWT/IDWT и renderBins; transferable результаты |
-| `src/shared/protocol.ts` | Типы сообщений, session/request IDs |
-| `src/main.ts` | Загрузка/ошибки, состояние UI, coalescing реконструкций и рендера |
-| `src/ui/plot.ts`, `controls.ts` | Canvas, overlay, hit testing и компактная маска |
-| `src/audio/player.ts` | AudioContext, playback, отмена ожидающего resume и освобождение source |
-| `config.json` | Единый лимит PCM для C++ compile definition и UI |
-| `scripts/build-wasm.mjs` | ES module + WASM, Vite `?url` asset pipeline |
-| `.github/workflows/pages.yml` | Native/JS/browser tests, сборка и Pages deploy |
+## Tests
 
-При новом файле прежний Worker уничтожается. Decode callbacks проверяют session ID. Для реконструкций допускается один запрос в работе и только последнее ожидающее состояние; устаревший результат не становится доступным для playback. Рендер имеет отдельную версию viewport. На UI передаются экранные bins, не миллионы коэффициентов. Память WASM может расти, поэтому glue не сохраняет heap views через выделения памяти.
+```bash
+npm run test:core     # Native C++ tests and an independent Python reference
+npm test             # TypeScript tests for masks, hit testing, and request versions
+npm run build        # WASM, type checking, and the production build
 
-## Лимиты и допущения
+npx playwright install chromium
+npm run test:e2e      # Browser tests against the production build
+```
 
-`config.json`: `maxPaddedSamples=8388608` (2²³) на канал, без уменьшения глубины DWT. Более 2²² исходных отсчётов вызывает предупреждение. Файлы >100 MiB вызывают предупреждение, >256 MiB отклоняются **до декодирования** — дополнительный предохранитель MVP. Byte size не гарантирует размер PCM; окончательная проверка выполняется после decode.
+On Linux CI, use `npx playwright install --with-deps chromium` if the browser also needs system libraries. You can use an existing Chromium installation:
 
-Для максимального стерео только одна копия PCM занимает 64 MiB. Оригинальный AudioBuffer, WASM coefficients/work buffers, transfer и reconstructed AudioBuffer вместе требуют нескольких сотен MiB; WASM heap ограничен 1 GiB. На мобильном устройстве выбирайте короткие файлы. Ошибки выделения/Worker показываются, но браузер/ОС может принудительно закрыть вкладку при нехватке памяти ещё во время decodeAudioData — перехват этого не гарантируется.
+```bash
+CHROMIUM_PATH=/usr/bin/chromium npm run test:e2e
+```
 
-Кодеки зависят от браузера. decodeAudioData может пересэмплировать файл в частоту AudioContext: UI показывает **фактически анализируемую** частоту, не объявляет её исходной частотой файла. Стерео-карта объединяет каналы через RMS, аудиоканалы не смешиваются. Экспорт WAV, waveform, drag-and-drop и произвольный zoom выше 32× не входят в MVP.
+To test a subpath build:
+
+```bash
+BASE_PATH=/repo/ npm run build
+BASE_PATH=/repo/ npm run test:e2e
+```
+
+The E2E tests start their own preview server on port `4173`. Keep that port free. To check types separately, run `npm run typecheck`.
+
+Tests cover known coefficients, padding, energy preservation, round trips, masks, separate channels, and peak protection. Browser tests cover WASM loading, PCM transfer through the Worker, playback, fast mask and file changes, decode errors, 30-second stereo audio, and a 320 px viewport.
+
+Native tests, the Python reference, TypeScript tests, and Chromium production tests have passed under both `/` and `/repo/`. Firefox, Safari, physical mobile devices, and all audio codec variants have not been tested. Automated playback checks do not replace listening through physical speakers.
 
 ## GitHub Pages
 
-1. Поместите файлы в GitHub-репозиторий, основная ветка `main` (либо измените trigger workflow).
-2. Settings → Pages → Build and deployment → Source: **GitHub Actions**.
-3. Push в `main` или запуск workflow вручную. CI установит Emscripten/Node, выполнит тесты и опубликует `dist/`.
-4. Workflow выбирает `/<repo>/`; для репозитория `*.github.io` — `/`. Для custom domain задайте repository variable `BASE_PATH=/`; для другого пути задайте соответствующее значение с завершающим `/`.
+The repository includes a [build and deploy workflow](.github/workflows/pages.yml).
 
-PR выполняет проверки без deploy. Разрешения публикации ограничены deploy-job. Для production не нужны SharedArrayBuffer, COOP/COEP, backend или собственный сервер. Реальная публикация требует доступного GitHub-репозитория и здесь не выполнялась.
+1. In the repository settings, open **Settings → Pages → Build and deployment** and select **GitHub Actions** as the source.
+2. Push to `main`, or start the workflow manually from the Actions tab. If your default branch has a different name, update the workflow trigger.
+3. Wait for the tests, build, and deploy job to finish. The workflow publishes the contents of `dist/`.
 
-## Выполненные проверки
+The workflow installs Node.js and Emscripten and runs native, JS, and Chromium tests. Pull requests run the checks without deploying.
 
-Проверено локально 2026-11-01 (Node 22.16, Emscripten 4.0.10, системный Chromium):
+The base path is set automatically: `/<repo>/` for a regular repository and `/` for a repository named `*.github.io`. To override it, add a repository variable named `BASE_PATH` under **Settings → Secrets and variables → Actions → Variables**. For an app at the root of a custom domain, set it to `/`. Configure the domain separately in GitHub Pages.
 
-- `npm ci --offline --cache .tools/npm-cache`: чистая установка из ранее загруженного кэша, успешно. Сетевая первоначальная установка также выполнена; системный npm потребовал обновлённого npm для разрешения зависимостей.
-- `npm run test:core`: известные векторы, reflection, длины 1/2/3/7/8/1000/65537, случайный round-trip, Parseval, пустая/полная/частичная маска, поддержка одного коэффициента, stereo, peak guard, render bins и ошибки — успешно.
-- Независимый рекурсивный Python-эталон: 5 dyadic-векторов, успешно.
-- `npm test`: 4 теста, успешно.
-- `npm run typecheck`: успешно (также входит в build).
-- `npm run build` и `BASE_PATH=/repo/ npm run build`: успешно; dist содержит настоящий WASM (~24 kB), Worker и UI assets.
-- Chromium production E2E под `/` и `/repo/`: по 4 сценария, включая upload → orange overlay → IDWT → playback → reset, быстрые смены маски/файла, corrupted file, numeric worker round-trip/stereo/silence, 30-секундное stereo с J=21 и ширину 320 px. Сетевых 404 / page errors в основном сценарии нет.
-- Визуально просмотрены desktop/mobile screenshots. Runtime не загружает аудио на сервер; тесты используют синтетические WAV только как входные файлы, в самом приложении встроенного демо нет.
+## How the transform works
 
-Не проверены Firefox, Safari, физические мобильные устройства, максимальный допустимый PCM на малой памяти, все варианты кодеков и реальный GitHub Pages deploy. В текущей папке нет доступного рабочего Git-репозитория (служебная `.git` не содержит репозитория), поэтому коммит/push не выполнялись. Браузерные тесты проверяют технический запуск playback и PCM, но не субъективное качество звука на физических динамиках.
+For a signal with `N` samples, the app pads the right edge to `M = next_power_of_two(N)` using symmetric reflection, including the last sample. For example, `[1, 2, 3]` becomes `[1, 2, 3, 3]`.
+
+The transform runs all `J = log2(M)` levels using the orthonormal formulas:
+
+```text
+a[k] = (x[2k] + x[2k+1]) / sqrt(2)
+d[k] = (x[2k] - x[2k+1]) / sqrt(2)
+```
+
+Coefficients are stored as `[a_J, d_J, …, d_1]`. The original values stay unchanged. Before IDWT, the mask sets selected values in a working copy to zero. The result is trimmed to the original `N` samples.
+
+The map uses the RMS of normalized contributions `|c| / sqrt(2^j)`, combined across channels and screen bins. Colors use a logarithmic scale with a reference value from the detail rows. This is not power spectral density (PSD).
+
+If the reconstructed signal has a peak above `1`, all channels use the same gain, `0.999 / peak`. The app shows the reduction in dB. Otherwise, the gain stays unchanged.
+
+## Project structure
+
+| Path | Purpose |
+| --- | --- |
+| [`cpp/`](cpp/) | Standalone C++ core, C ABI for WASM, and native tests |
+| [`src/wasm/`](src/wasm/) | TypeScript wrapper for WASM memory and typed array transfer |
+| [`src/worker/`](src/worker/) | DWT, IDWT, and map data preparation in a Web Worker |
+| [`src/ui/`](src/ui/) | Canvas map, masks, zoom, and hit testing |
+| [`src/audio/`](src/audio/) | AudioContext and playback management |
+| [`src/shared/protocol.ts`](src/shared/protocol.ts) | Message types and request IDs |
+| [`src/main.ts`](src/main.ts) | File loading and interface state |
+| [`scripts/`](scripts/) | WASM build and native test scripts |
+| [`tests/`](tests/) | TypeScript tests, browser tests, and the Python reference |
+| [`config.json`](config.json) | Shared sample limit for C++ and the interface |
+
+Loading a new file stops the old Worker. Session and request IDs prevent old results from replacing current data. The main thread receives map data at screen resolution; the app does not create a DOM element for each coefficient. See [`DESIGN.md`](DESIGN.md) for the detailed specification in Russian.
+
+## Limits
+
+- **Signal length:** up to `2²³ = 8,388,608` padded samples per channel, about 190 seconds at 44.1 kHz or 175 seconds at 48 kHz. Every accepted file uses the full transform depth.
+- **File size:** files over 100 MiB show a warning. Files over 256 MiB are rejected before decoding. A compressed file's size does not tell you how much PCM memory it needs.
+- **Memory:** stereo audio at the sample limit needs several hundred MiB, including working copies. The WASM heap is limited to 1 GiB. Use short recordings on devices with little memory. The browser may close the tab if it runs out of memory during decoding.
+- **Channels:** one or two channels are supported. Audio with more channels is rejected without automatic mixing.
+- **Sample rate:** `decodeAudioData` may resample the file to the AudioContext sample rate. The interface shows the actual sample rate of the analyzed buffer.
+- **Export:** saving processed audio as WAV is not yet supported.
+
+Audio and processing results stay in browser memory. Network requests load the app's own resources.
